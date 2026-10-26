@@ -67,8 +67,10 @@ class TestContamination(unittest.TestCase):
 
 
 def run_pipe(raw, out, env=None):
-    e = dict(os.environ, **(env or {}))
-    return subprocess.run([os.path.join(ROOT, "run.sh"), raw, out], env=e, capture_output=True, text=True)
+    # run.sh is a thin wrapper around this; calling the module directly also works on Windows
+    e = dict(os.environ, PYTHONHASHSEED="0", PYTHONUTF8="1", **(env or {}))
+    return subprocess.run([sys.executable, "-m", "curate.cli", raw, out], cwd=ROOT, env=e,
+                          capture_output=True, text=True)
 
 
 def tree_hash(out):
