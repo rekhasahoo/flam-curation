@@ -1,0 +1,2 @@
+numpy>=1.24
+pyarrow>=14      # only needed to read .parquet raw files
