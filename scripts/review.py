@@ -2,7 +2,7 @@
   python scripts/review.py <out_dir> pairs [--lo 0.70 --hi 0.90 -n 3]   near-dup pairs around the threshold
   python scripts/review.py <out_dir> hist                               histogram of candidate-pair similarity
   python scripts/review.py <out_dir> drops <reason> [-n 10]             sampled dropped docs for a filter reason
-  python scripts/review.py <out_dir> contam                             leak summary + rejected near-misses
+  python scripts/review.py <out_dir> adult --raw raw --source wikipedia_hi -n 7   explicit terms behind adult drops, in context\n  python scripts/review.py <out_dir> leaks                               each contamination hit with eval text + matching doc\n  python scripts/review.py <out_dir> contam                             leak summary + rejected near-misses
   python scripts/review.py <out_dir> sample [--rows 1000] -o sample.jsonl   random cleaned sample (seeded)
   python scripts/review.py <out_dir> tables                              markdown funnel/sources/drop-reason tables"""
 import argparse, csv, gzip, json, os, random, sys
@@ -40,6 +40,7 @@ def main():
     ap.add_argument("arg", nargs="?"); ap.add_argument("-n", type=int, default=3)
     ap.add_argument("--lo", type=float, default=0.70); ap.add_argument("--hi", type=float, default=0.90)
     ap.add_argument("-o", default="sample.jsonl"); ap.add_argument("--rows", type=int, default=1000)
+    ap.add_argument("--raw", default="raw"); ap.add_argument("--source", default="")
     a = ap.parse_args()
     if a.cmd == "pairs":
         pairs = [(r["dup_of"], r["id"], float(r["sim"])) for r in ledger(a.out) if r["stage"] == "near_dedup"]
@@ -70,6 +71,30 @@ def main():
         txt = text_index(a.out, {m["doc_id"] for m in miss})
         for m in miss:
             print(f"--- rejected: {m['method']} score={m['score']}\nEVAL: {ev[m['eval_id']][:250]}\nDOC : {txt[m['doc_id']][:250]}\n")
+    elif a.cmd == "adult":                      # which explicit terms triggered adult_content drops, in context
+        from curate import ingest, quality, textnorm
+        ids = {r["id"] for r in ledger(a.out) if r["reason"] == "adult_content" and (not a.source or r["source"] == a.source)}
+        shown = 0
+        for rel, full in ingest.list_files(a.raw):
+            for idx, text, err in ingest.iter_records(full):
+                if text and ingest.doc_id(rel, idx) in ids and shown < max(a.n, 3):
+                    t = textnorm.normalize(text)[0]
+                    pats = [("S", quality._STRONG_LAT), ("S", quality._STRONG_DEV), ("m", quality._MED_LAT), ("w", quality._WEAK_LAT), ("w", quality._WEAK_DEV)]
+                    ms = sorted((m.start(), k, m.group(0)) for k, rx in pats for m in rx.finditer(t))
+                    s_n = sum(k == "S" for _, k, _ in ms); m_n = sum(k == "m" for _, k, _ in ms)
+                    print(f"--- {rel} #{idx}  strong={s_n} medium={m_n} weak={len(ms) - s_n - m_n} tokens={len(t.split())}  title/start: {t[:70]!r}")
+                    for pos, k, w in ms[:3]:
+                        print(f"    [{k}] {w!r}: ...{t[max(0, pos - 45):pos + 35]!r}")
+                    shown += 1
+        print(f"({len(ids)} adult_content drops for source={a.source or 'ALL'})")
+    elif a.cmd == "leaks":                      # every contamination hit: is it a real copy or just a shared template?
+        ev = {e["eval_id"]: e["text"] for e in jl(os.path.join(a.out, "eval.jsonl"))}
+        rows = jl(os.path.join(a.out, "contamination.jsonl"))
+        txt = text_index(a.out, {d["id"] for r in rows for d in r["details"]})
+        for r in rows:
+            print(f"=== {r['eval_id']} ({r['method']})\nEVAL: {ev[r['eval_id']][:160]!r}")
+            for d in r["details"][:3]:
+                print(f"  -> {d['method']} score={d['score']}  DOC: {txt[d['id']][:160]!r}")
     elif a.cmd == "tables":
         m = json.load(open(os.path.join(a.out, "manifest.json")))
         stages = ["in", "after_ingest", "after_normalize", "after_langid", "after_quality", "after_eval_holdout",

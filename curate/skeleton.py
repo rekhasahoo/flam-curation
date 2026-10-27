@@ -3,6 +3,7 @@ training in Latin script (or vice-versa). Vowels/matras/virama are dropped on bo
 consonants are folded into coarse classes, so  है/hai -> h,  मैं/main -> mn,  घर/ghar -> gr.
 Deliberately crude: it is a *candidate generator* with a high overlap threshold, not a transliterator."""
 import re
+from functools import lru_cache
 
 _DEV = {}
 for chars, cls in [("कखक़ख़", "k"), ("गघग़", "g"), ("चछ", "c"), ("जझज़", "j"), ("टठतथ", "t"), ("डढदध", "d"),
@@ -20,10 +21,12 @@ def _collapse(s):
     return re.sub(r"(.)\1+", r"\1", s)
 
 
+@lru_cache(maxsize=500_000)
 def deva_word(w: str) -> str:
     return _collapse("".join(_DEV.get(c, "") for c in w))
 
 
+@lru_cache(maxsize=500_000)
 def latin_word(w: str) -> str:
     w = w.lower()
     for a, b in _DIGRAPH:

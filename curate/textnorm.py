@@ -68,10 +68,17 @@ def normalize(raw: str):
     return s, flags
 
 
+_SEEN, _PUNCT = set(), {}
+
+
 def dedup_key(text: str) -> str:
     """Aggressive comparison form: things that *read* the same compare the same.
     casefold, drop joiners, fold Devanagari digits, punctuation/symbols -> space, collapse spaces."""
     s = unicodedata.normalize("NFKC", text).casefold()
     s = s.replace(ZWJ, "").replace(ZWNJ, "").translate(DEVA_DIGITS)
-    s = "".join(" " if unicodedata.category(c)[0] in "PSZC" else c for c in s)
-    return " ".join(s.split())
+    new = set(s) - _SEEN
+    for c in new:                                   # classify each distinct char once, ever
+        _SEEN.add(c)
+        if unicodedata.category(c)[0] in "PSZC":
+            _PUNCT[ord(c)] = " "
+    return " ".join(s.translate(_PUNCT).split())

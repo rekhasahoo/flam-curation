@@ -21,20 +21,18 @@ but they we his her an or will would can could their there what which who when w
 _WORD = re.compile(r"[a-z']+")
 
 
+_DEVA = re.compile(r"[^\u0900-\u0963\u0970-\u097f]")      # keeps Devanagari incl. matras, drops digits/danda
+_LATIN = re.compile(r"[^A-Za-z\u00c0-\u00d6\u00d8-\u00f6\u00f8-\u024f]")
+_LETTER_ONLY = re.compile(r"[\W\d_]")
+
+
 def _script_counts(text: str):
-    deva = latin = other = 0
-    for ch in text:
-        o = ord(ch)
-        if 0x0900 <= o <= 0x097F:
-            if 0x0966 <= o <= 0x096F or o in (0x0964, 0x0965):   # digits, danda
-                continue
-            deva += 1
-        elif ch.isalpha():
-            if o < 0x250:
-                latin += 1
-            else:
-                other += 1
-    return deva, latin, other
+    deva_chars = _DEVA.sub("", text)
+    deva = len(deva_chars)
+    latin = len(_LATIN.sub("", text))
+    all_letters = len(_LETTER_ONLY.sub("", text))
+    deva_letters = len(_LETTER_ONLY.sub("", deva_chars))
+    return deva, latin, max(0, all_letters - latin - deva_letters)
 
 
 def detect(text: str) -> str:

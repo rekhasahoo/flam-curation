@@ -12,7 +12,7 @@ SNIPPET = 400
 
 def _atomic_write_json_gz(path, rows):
     tmp = path + ".tmp"
-    with open(tmp, "wb") as raw, gzip.GzipFile(fileobj=raw, mode="wb", mtime=0) as gz:
+    with open(tmp, "wb") as raw, gzip.GzipFile(fileobj=raw, mode="wb", mtime=0, compresslevel=3) as gz:
         for r in rows:
             gz.write((json.dumps(r, ensure_ascii=False, sort_keys=True) + "\n").encode("utf-8"))
     os.replace(tmp, path)
@@ -24,12 +24,12 @@ def process_doc(raw_text, cfg: Config):
     if not text:
         return {"status": "dropped", "stage": "normalize", "reason": "empty", "lang": "unk", "snippet": ""}
     lang = langid.detect(text)
-    snip = pii.redact(text[:SNIPPET])[0]
+    snip = lambda: pii.redact(text[:SNIPPET])[0]
     if lang not in cfg.keep_langs:
-        return {"status": "dropped", "stage": "langid", "reason": f"lang_{lang}", "lang": lang, "snippet": snip}
+        return {"status": "dropped", "stage": "langid", "reason": f"lang_{lang}", "lang": lang, "snippet": snip()}
     text, reason = quality.check(text, flags, cfg)
     if reason:
-        return {"status": "dropped", "stage": "quality", "reason": reason, "lang": lang, "snippet": snip}
+        return {"status": "dropped", "stage": "quality", "reason": reason, "lang": lang, "snippet": snip()}
     text, counts = pii.redact(text, cfg.aadhaar_strict)
     return {"status": "ok", "lang": lang, "text": text, "pii": dict(counts),
             "raw_sha": hashlib.sha1(raw_text.encode("utf-8", "surrogatepass")).hexdigest()[:20],

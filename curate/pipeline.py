@@ -6,7 +6,7 @@ Stage B passes over the shards in sorted (file, record) order:
 Everything is written to <out>/_build and swapped into place at the end, so a killed run can
 never leave a half-written final output; rerunning is idempotent.
 """
-import csv, gzip, heapq, hashlib, json, os, shutil, time
+import csv, gzip, heapq, hashlib, json, os, shutil, time, zlib
 from collections import Counter, defaultdict
 from concurrent.futures import ProcessPoolExecutor
 
@@ -37,7 +37,7 @@ class GzJsonlWriter:
         if self.fh is None or self.n >= self.size:
             self.close()
             p = os.path.join(self.dir, f"part-{self.part:05d}.jsonl.gz"); self.part += 1
-            self.fh, self.n = gzip.GzipFile(p, "wb", mtime=0), 0
+            self.fh, self.n = gzip.GzipFile(p, "wb", mtime=0, compresslevel=4), 0
             self.files.append(p)
         self.fh.write((json.dumps(row, ensure_ascii=False, sort_keys=True) + "\n").encode("utf-8")); self.n += 1
 
@@ -66,7 +66,7 @@ def select_eval(work_dir, metas, cfg, hasher):
         for r in read_shards(work_dir, metas):
             if r["status"] == "ok" and r["lang"] == lang:
                 t = _truncate(r["text"], cfg.eval_max_chars)
-                if len(t) >= cfg.eval_min_chars and len(t.split()) >= 15:
+                if len(t) >= cfg.eval_min_chars and len(t.split()) >= cfg.eval_min_tokens:
                     yield (prio(r), r["id"], r["source"], r["lang"], t)
 
     chosen = []
@@ -114,14 +114,14 @@ class ContamIndex:
     def _grams(toks, n):
         if len(toks) < n:
             return set()
-        return {hashlib.blake2b(" ".join(toks[i:i + n]).encode(), digest_size=8).digest() for i in range(len(toks) - n + 1)}
+        return {zlib.crc32(" ".join(toks[i:i + n]).encode()) for i in range(len(toks) - n + 1)}   # 32-bit ids: cheap, deterministic
 
-    def scan(self, doc):
+    def scan(self, doc, key=None):
         """-> list of (eval_idx, method, score) for hits, plus near-misses."""
         cfg, hits, near = self.cfg, {}, []
         for i in self.raw.get(doc["key_sha"], ()):
             hits[i] = ("exact" if self.items[i]["raw_sha"] == doc["raw_sha"] else "normalized", 1.0)
-        toks = textnorm.dedup_key(doc["text"]).split()
+        toks = (key if key is not None else textnorm.dedup_key(doc["text"])).split()
         cnt = Counter(i for g in self._grams(toks, cfg.contam_ngram) for i in self.ng.get(g, ()))
         for i, c in cnt.items():
             s = c / self.ng_n[i]
@@ -196,7 +196,8 @@ def run(raw_dir, out_dir, cfg: Config):
             if r["id"] in eval_by_doc:
                 ledger(r, "dropped", "eval_holdout", "held_out_for_eval", eval_by_doc[r["id"]]); continue
 
-            hits, near = cidx.scan(r)
+            key = textnorm.dedup_key(r["text"])             # computed once, shared by contamination + dedup
+            hits, near = cidx.scan(r, key)
             for i, m, s in near:
                 contam_near_f.append({"eval_id": eval_items[i]["eval_id"], "doc_id": r["id"], "method": m, "score": s})
             if hits:
@@ -207,7 +208,6 @@ def run(raw_dir, out_dir, cfg: Config):
 
             if r["key_sha"] in exact_seen:
                 ledger(r, "dropped", "exact_dedup", "exact_duplicate", exact_seen[r["key_sha"]], 1.0); continue
-            key = textnorm.dedup_key(r["text"])
             sig = None
             if len(key.split()) >= cfg.near_min_tokens:
                 sig = hasher.signature(list(shingles(key, cfg.shingle_k)))

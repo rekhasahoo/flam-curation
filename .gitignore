@@ -3,3 +3,4 @@ out/
 _work/
 __pycache__/
 *.pyc
+.venv/
