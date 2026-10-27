@@ -1,49 +1,91 @@
 # DECISIONS.md
 
-> **Status: template.** Design decisions below are real (they describe the code). Every `«RUN: …»`
-> is a number or example that must come from *your* run on the downloaded data. Command in brackets.
-> Delete this box and every unfilled `«RUN»` before submitting; do not invent numbers.
+## 1. Sources
 
-## 1. Sources  `[./run.sh raw out; python scripts/review.py out tables]`
-| source | license (verify on card) | docs | bytes |
-|---|---|---|---|
-| wikipedia_hi (`wikimedia/wikipedia` 20231101.hi) | CC BY-SA 3.0 / GFDL | «RUN» | «RUN» |
-| fineweb2_hin_Deva (`HuggingFaceFW/fineweb-2`) | ODC-By 1.0 + CC ToU | «RUN» | «RUN» |
-| fineweb2_hin_Latn (same dataset) | ODC-By 1.0 + CC ToU | «RUN» | «RUN» |
-- Hinglish: FineWeb-2's `hin_Latn` subset is romanized-Hindi web text. Its source labels are not trusted; my own langid decides (see §2). «RUN: how many of its docs I label hi-Latn vs en/other»
-- Download dates are in `raw/SOURCES.json` and `manifest.json`.
+| Source | License (verify dataset card) | Records downloaded | Bytes |
+|---|---|---:|---:|
+| `wikipedia_hi` — Wikipedia Hindi, 20231101.hi | CC BY-SA 3.0 / GFDL; verify | 6,000 | 11,210,546 |
+| `fineweb2_hin_Deva` — FineWeb-2 | ODC-By 1.0 + CC ToU; verify | 6,000 | 9,576,894 |
+| `fineweb2_hin_Latn` — FineWeb-2 | ODC-By 1.0 + CC ToU; verify | 6,000 | 16,971,692 |
 
-## 2. Funnel  `[python scripts/review.py out tables]`
-«RUN: paste the per-language funnel table (in → ingest → normalize → langid → quality → eval_holdout → contamination → exact_dedup → near_dedup).»
-- Skipped at ingest (malformed JSON / bad bytes / no text field): «RUN: from `ingest_counters`».
-- Langid is script + lexicon based (no model): Devanagari share ≥ 0.35 of letters → `hi`; Latin → `hi-Latn` only if ≥ 10% of tokens are unambiguous romanized-Hindi function words (words that are also English, like *main, par, to, me*, are excluded). Known limit: Marathi/Nepali/Sanskrit are Devanagari and land in `hi`. Docs with no letters (pure number tables) get `other` and are dropped at the langid stage by design (no linguistic signal); I judged them useless for an LM corpus rather than "unusual but legitimate".
+FineWeb-2's `hin_Latn` subset contains Romanized Hindi web text, including substantial noise. Upstream labels are not blindly trusted; a script-and-lexicon language identifier assigns the final labels.
 
-## 3. Near-duplicates  `[python scripts/review.py out hist; … pairs --lo 0.7 --hi 0.9 -n 3]`
-- Method: word 3-gram shingles on the aggressive dedup key → 128-perm MinHash → 16 bands × 8 rows (S-curve midpoint ≈ 0.71) → candidates verified by estimated Jaccard ≥ **0.80**. Docs with < 8 tokens are exact-dedup only (templated one-liners would otherwise collide). First-seen in sorted file order is kept, so `dup_of` always points at a kept doc.
-- How 0.80 was chosen: «RUN: describe the histogram from `hist` and what you read at 0.70/0.75/0.80/0.85; adjust `--near-threshold` if your reading differs. Default 0.80 is a starting point, not a conclusion.»
-- Three pairs near the threshold and my call: «RUN: paste three from `pairs`, state keep/drop and why (e.g. same article + one appended paragraph → distinct content or true near-dup?).»
+## 2. Funnel and language identification
 
-## 4. Filters: false positives  `[python scripts/review.py out drops <reason> -n 10]`
-Deliberate exemptions: short texts (min 8 non-space chars, so proverbs survive), poem-like docs (≥4 lines, avg line < 60 chars) skip the line-repeat/boilerplate-strip rules, digit-heavy docs (≥30% digits) skip repetition/symbol rules.
-Known cost I already saw on the synthetic fixture: a clean sentence wrapped in heavy HTML is dropped as `markup_heavy` (tag chars > 20%) rather than salvaged.
-«RUN: three real docs that were wrongly dropped, with reason + the rule/threshold you'd change; or an argument that you found none after sampling N per reason.»
+| Language | Input | After quality | After holdout | After contamination | After exact dedup | Final |
+|---|---:|---:|---:|---:|---:|---:|
+| `hi` | 12,022 | 11,925 | 11,775 | 11,773 | 11,418 | 11,363 |
+| `hi-Latn` | 5,946 | 3,579 | 3,529 | 3,523 | 3,523 | 3,522 |
+| `en` | 24 | 0 | 0 | 0 | 0 | 0 |
+| `other` | 8 | 0 | 0 | 0 | 0 | 0 |
 
-## 5. Contamination  `[python scripts/review.py out contam]`
-- Eval set: «RUN: n» items (150 Devanagari + 50 Hinglish target), chosen by `sha1(seed:id)` priority from docs that passed all stage-A filters, 80–600 chars, ≥ 15 tokens, distinct from each other. Held out **before** dedup, so they never enter training. Measures: language-model perplexity / continuation fluency on clean in-distribution Hindi and Hinglish (not knowledge or reasoning).
-- Checks against every other doc: (1) exact raw copy; (2) equal after normalization key; (3) word-5-gram overlap ≥ 50% of the eval item's n-grams (catches copies inside longer docs); (4) cross-script: Devanagari ↔ Latin compared on a vowel-less consonant skeleton (है/hai → h, घर/ghar → gr), 4-gram overlap ≥ 60%.
-- Result: «RUN: items affected, train docs removed, split by method (`contamination.jsonl`).»
-- A rejected candidate: «RUN: top item from `contam` near-misses, its score, why it is a different text.»
-- Limits: skeleton matching is a crude candidate generator, not a transliterator; paraphrases/translations are not detected.
+Final corpus: **14,885 documents** — 11,363 Hindi and 3,522 Romanized Hindi, approximately 3.23:1. The language identifier retained all 12,022 Devanagari-labelled Hindi records and all 5,946 Latin-script Hindi candidates at its stage. The 24 English-labelled and 8 other-language records were rejected.
+
+Language identification is heuristic, not model-based: Devanagari letter share ≥35% gives `hi`; Latin text is classified as `hi-Latn` only when ≥10% of tokens are unambiguous Romanized Hindi function words. Words shared with English are excluded. Known limitations include Marathi, Nepali, and Sanskrit being classified as Hindi, and Hindi stubs containing English bibliographies being falsely rejected.
+
+The quality stage removed 2,207 documents as `adult_content`, plus 231 spam, 15 garbled-encoding, 6 repetitive, 4 boilerplate, and 1 markup-heavy document. Strict adult-content filtering is intentional; its cost is losing legitimate sexual-health and sex-education material. Gender-related uses of “sex” should remain eligible. This policy requires contextual false-positive testing.
+
+## 3. Near-duplicates
+
+Deduplication uses word 3-gram shingles on an aggressive normalized key, 128-permutation MinHash, and 16 bands × 8 rows. Candidates are verified at estimated Jaccard similarity ≥0.80. Documents under eight tokens receive exact deduplication only. First-seen records in sorted file order are retained.
+
+The similarity histogram shows 58 pairs in 0.60–0.65, 46 in 0.65–0.70, 46 in 0.70–0.75, 40 in 0.75–0.80, 20 in 0.80–0.85, 15 in 0.85–0.90, 20 in 0.90–0.95, and 1 in 0.95–1.00.
+
+Three reviewed pairs near the threshold scored 0.781, 0.797, and 0.820. They describe different Indian districts or towns using similar encyclopedia templates. Shared structure alone is insufficient to establish duplicate content, so these are reasonable near-miss examples to retain rather than merge. The chosen threshold is a practical compromise, not a guarantee of semantic equivalence.
+
+The final run removed 355 exact duplicates and 56 near-duplicates.
+
+## 4. Quality-filter decisions
+
+The content policy rejects explicit sexual narratives and pornographic material, while allowing legitimate educational or medical material where possible. The observed 2,207 adult-content drops are a significant source of corpus reduction, particularly in `fineweb2_hin_Latn` (2,130 drops), compared with `fineweb2_hin_Deva` (73) and `wikipedia_hi` (4).
+
+Other deliberate exemptions include short texts (minimum eight non-space characters), poem-like documents (at least four lines, average line under 60 characters), and digit-heavy documents (at least 30% digits), which bypass selected repetition or symbol rules.
+
+Known limitations and debugging observations: repetitive Hindi constructions can trigger false positives; substring-based rules can match words such as Uganda, Scotland, and Sensex incorrectly. A clean sentence wrapped in heavy HTML can be rejected as `markup_heavy`. These cases motivate boundary-aware matching, context-sensitive rules, and manual false-positive review rather than indiscriminately lowering thresholds.
+
+## 5. Evaluation holdout and contamination
+
+The held-out evaluation set contains 200 items: 150 Devanagari Hindi and 50 Romanized Hindi targets. Items are selected deterministically by seeded hash priority from eligible documents and held out before deduplication. The intended evaluation measures language-model perplexity and continuation fluency on clean, in-distribution Indic text, not knowledge or reasoning.
+
+Contamination checks cover exact copies, normalized-key matches, word 5-gram overlap, and cross-script consonant-skeleton overlap. The final manifest reports **4 affected evaluation items and 8 training documents removed for contamination**. The diagnostic shows three affected items with `near_ngram` matches and one with a `cross_script` match. The tables report seven near-ngram and one cross-script training-side removal events.
+
+One rejected near-miss scored 0.404 and compared hotel descriptions for different properties and locations. Similar boilerplate wording is not sufficient evidence of evaluation leakage; the underlying content differs.
+
+Limitations: consonant-skeleton matching is a crude cross-script candidate generator, not a transliterator. Paraphrases and translations can remain undetected.
 
 ## 6. Reproducibility
-- `manifest.json` holds sha256 of every raw file, all thresholds, a hash of the code, and the sha256 of each output shard. `raw/SOURCES.json` + `raw/checksums.txt` come from `download.sh`.
-- Rebuild = same git commit + same raw files (check checksums) + `./run.sh raw out`. No randomness except seeded hashes; no Python `hash()`; gzip mtime = 0; processing order = sorted path, record index. Test: `tests/test_pipeline.py` kills a run mid-way (exit 137), reruns, and asserts byte-identical output to an uninterrupted run and no duplicated ledger ids.
-- Stage-A shards are cached by (input sha256, config+code signature), so editing a filter automatically recomputes. Final outputs are built in `_build/` and swapped in last.
-- Upstream datasets are moving targets: pin the HF revision (commit hash) in `download.py` before the final run. «RUN/TODO»
 
-## 7. Scale (2 TB on object storage)
-First thing to break is stage B's single process holding global state: the exact-hash dict, the LSH tables + 128×uint32 signatures per kept doc (~0.5 KB/doc → hundreds of GB for ~10⁹ docs), and its strictly sequential order (which is what makes dedup deterministic). Stage A also treats a file as the unit of retry, so one 50 GB shard that dies loses everything. Fix: chunk A by ~100 MB with per-chunk checkpoints on S3; do exact dedup by hash-partitioned shuffle (key → shard, keep min id); run LSH by band-partitioned shuffle + connected components (union-find) instead of an in-memory index; run contamination as a join of eval n-grams against the corpus. Determinism is kept by choosing canonical docs as min(doc id) per component rather than "first seen".
+`raw/checksums.txt` records checksums for downloaded source files. `manifest.json` records output statistics, PII detections, evaluation results, and pipeline metadata. Rebuild using the same code revision and raw inputs:
+
+`./run.sh raw out`
+
+The pipeline is designed for deterministic ordering, seeded selection, and reproducible outputs. Tests exercise interruption and restart behavior.
+
+Dataset revisions observed on 27 October 2026:
+
+- `wikimedia/wikipedia`: `b04c8d1ceb2f5cd4588862100d08de323dccfbaa`
+- `HuggingFaceFW/fineweb-2`: `af9c13333eb981300149d5ca60a8e9d659b276b9`
+
+Confirm that these exact revisions are pinned in the downloader and recorded in `raw/SOURCES.json`; recording a revision after downloading does not retroactively pin the download. Verify licenses and terms on the dataset cards. Raw checksums identify the actual downloaded bytes and should be checked before rebuilding.
+
+## 7. Scale to 2 TB
+
+The first bottleneck is stage B's global in-memory state: exact-hash indexes, LSH tables, signatures, and sequential deduplication. Stage A also retries whole files instead of smaller chunks.
+
+For object storage, split stage A into approximately 100 MB checkpointed chunks. Use hash-partitioned shuffles for exact deduplication and band-partitioned candidate generation for near-deduplication, followed by deterministic component resolution. Run evaluation contamination checks as joins over evaluation n-grams. Choose canonical documents deterministically rather than relying on processing order.
 
 ## 8. Wrap-up
-Not done, in priority order: «RUN/EDIT — e.g. 1. classifier-based quality scoring; 2. real Marathi/Nepali split in langid; 3. semantic dedup with embeddings; 4. per-source threshold tuning; 5. chunked stage A».
-Time spent: «RUN: honest hours».
+
+Completed: ingestion, normalization, language identification, quality filtering, evaluation holdout creation, contamination checks, exact and near-deduplication, source checksums, and output inspection.
+
+Remaining work, in priority order:
+
+1. Improve language identification for Hindi documents containing English bibliographies.
+2. Evaluate quality filters, especially adult-content false positives and false negatives.
+3. Add classifier-based quality scoring.
+4. Investigate semantic deduplication with embeddings.
+5. Tune thresholds per source and consider chunked stage-A processing for larger corpora.
+
+**Time spent:** Approximately 3 hours of active work across two days (2 hours on the first day and 1 hour on the second day).
+
+The work covered dataset ingestion, language identification, quality filtering, PII redaction, deduplication, evaluation-set construction, contamination checks, reproducibility validation, and documentation.
